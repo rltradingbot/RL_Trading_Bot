@@ -2,7 +2,6 @@
 
 본 저장소는 Binance Vision 시세 데이터를 기반으로, 포트폴리오 비중을 학습하는 강화학습 트레이딩 실험 코드입니다. 핵심 알고리즘은 Implicit Q-Learning(IQL)의 가치 추정과 확산 모형(diffusion) 기반 행동 모델을 결합(IDQL)하여, 상태-가치 기반의 평가와 행동 분포 학습을 동시에 수행합니다. 환경은 리스크 민감 보상 함수와 거래비용(슬리피지) 모델을 포함합니다.
 
-주의: 이 코드는 연구/실험용입니다. 실제 투자나 운용에 사용하지 마십시오. 금융 리스크는 사용자 본인에게 있습니다.
 
 ---
 
@@ -13,6 +12,50 @@
 - **에이전트(`IDQLAgent`)**: IQL(Value expectile + TD Q) + 확산정책(variance-preserving, epsilon 예측), 폴리시 인코더 EMA 분리 (참고: [IDQL 논문](https://arxiv.org/pdf/2304.10573))
 - **리플레이 버퍼**: CPU 텐서 기반 고속 샘플링, 핀 메모리로 GPU 이전 최적화
 - **검증/로그/체크포인트**: 주기적 평가, CSV 메트릭 기록, 모델 체크포인트 저장/로드
+
+---
+
+### 학습 코드 동작 순서
+
+1) 설정/로깅 초기화
+- `configs/train_config.yaml` 로드 → 로깅/검증/체크포인트 설정 읽기
+- 실행 로그 디렉터리 생성, 메트릭 레코더 초기화
+
+2) 데이터 로드 및 전처리
+- 학습 구간 CSV 로드: `data.binance.load_csv.load_vision_monthlies_csv`
+- 전처리 파이프라인 적용: `set_index_and_sort` → `sanity_check` → `ensure_regular_grid` → `drop_outside_features`
+- 동일 절차로 검증 구간 데이터 준비
+
+3) 데이터셋/환경 구성
+- `DatasetConfig(window_size, base_interval, strict_anchor, symbol_order)` 생성
+- `EnvConfig(symbols, min/max_steps, transaction_cost_mu/sigma, reward_window, reward_weights, reward_annualize, seed)` 생성
+- `RLTradingEnv` 초기화 (보상·슬리피지·포트폴리오 상태 포함)
+
+4) 디바이스/리플레이 버퍼/하이퍼파라미터 설정
+- 디바이스 선택(CUDA/CPU), `ReplayBuffer(capacity, ready_after)` 생성
+- 배치크기, 업데이트 주기/반복, 에피소드·총스텝 한도 등 하이퍼파라미터 로드
+
+5) 에이전트(IDQL) 초기화
+- `env.reset()` 후 상태를 `pack_state_for_buffer`로 패킹하여 per-step 특징 결합 차원(D_packed) 산출
+- `IDQLConfig` 구성 후 `IDQLAgent` 생성(인코더/가치·Q/확산 정책 초기화 및 베타 스케줄 등록)
+
+6) 학습 루프(에피소드 반복)
+- 각 에피소드: `env.reset()` → done까지 반복
+  - 상태 패킹 → `agent.act(state)`로 액션 산출(확산 정책 후보 샘플 + Q 스코어링, ε-그리디 탐험 포함)
+  - `env.step(action)` → 보상/컴포넌트/다음 상태 수신
+  - 전이 `(s,a,r,s',done)`를 리플레이 버퍼에 저장, 카운터 갱신
+  - 버퍼 준비·스텝 조건 충족 시 업데이트 버스트 실행:
+    - `train_iters_per_update` 회 반복: 버퍼 샘플 → 디바이스 전송 → `agent.update(batch)` → 손실/Q/V 통계 누적
+- 에피소드 통계 로깅 및 메트릭 기록, 조기종료 조건(`max_total_env_steps`) 검사
+
+7) 주기적 검증 및 체크포인트(옵션)
+- `every_episodes` 간격으로 체크포인트 저장(활성 시) 후 `environment.validation.evaluate_agent` 실행
+- 에이전트·균등분배·BTC-온리 최종수익 통계를 기록
+
+8) 종료 처리
+- 에피소드/검증 메트릭 CSV를 실행 폴더에 저장
+
+- IDQL 업데이트 순서 요약: (1) 인코더+V+Q(IQL) → (2) `q_target` 및 폴리시 인코더 EMA 갱신 → (3) 확산 정책(로짓 공간 BC) 학습
 
 ---
 
