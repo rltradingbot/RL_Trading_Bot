@@ -1,0 +1,87 @@
+# Training configuration for pink_banana_trading_bot_dev
+
+binance_kline_dataset_root: "/data/binance/raw/spot/monthly/klines"
+
+symbols:
+  - BTCUSDT
+  - ETHUSDT
+  - XRPUSDT
+  - BNBUSDT
+  - DOGEUSDT
+  - TRXUSDT
+  - ADAUSDT
+
+train_start_month: "2020-08"
+train_end_month: "2024-07"
+
+preprocessing_pipeline:
+  - set_index_and_sort
+  - sanity_check
+  - ensure_regular_grid
+  - drop_outside_features
+
+window_size: 128
+base_interval: "1m"
+strict_anchor: true
+
+random_seed: 64
+
+slippage_mu: 0.0024
+slippage_sigma: 0.0005
+
+env:
+  min_steps: 512
+  max_steps: 4096
+  reward_weights: [0.8, 0.8, 0.02, 0.01]
+  reward_annualize: false
+
+replay_buffer:
+  capacity: 65536
+  ready_after: 8192
+
+training:
+  batch_size: 128
+  min_steps_for_update_replay: 4096
+  train_iters_per_update: 256
+  max_episodes: 4096
+  max_total_env_steps: 8388608
+
+idql:
+  state_emb_dim: 256
+  hidden: 512
+  gamma: 0.99
+  tau_expectile: 0.7
+  lr: 0.0003
+  target_ema: 0.005
+  diff_T: 5
+  diff_time_dim: 128
+  diff_blocks: 3
+  diff_samples_per_state: 32
+  diff_beta_min: 0.0001
+  diff_beta_max: 0.02
+  diff_beta_schedule: cosine
+  diff_dropout: 0.1
+  policy_ema: 0.01
+  epsilon_explore: 0.05
+
+validation:
+  enabled: true
+  every_episodes: 16
+  n_episodes: 8
+  start_month: "2024-08"
+  end_month:   "2025-07"
+
+# Checkpoint saving (models)
+checkpoint:
+  enabled: true
+  # Directory where checkpoints are stored; per-run subfolder is created automatically
+  dir: "/RL_TRADING_BOT/models"
+
+# Logging configuration
+logging:
+  # Root directory for logs and CSVs. If relative, it is resolved from project root.
+  root_dir: "/RL_TRADING_BOT/logs"
+  # Logging level: DEBUG, INFO, WARNING, ERROR
+  level: "INFO"
+  # Optional run name; if empty or omitted, a timestamp-based run name is used
+  run_name: ""
