@@ -7,6 +7,20 @@
 
 ### 주요 특징
 - **데이터 파이프라인**: Binance Vision 월별 CSV를 읽고, 규칙 격자(reindex), 결측/마스크, per-feature 경과시간(elapsed)을 포함한 6개 엔지니어드 특징을 생성
+  - **데이터 전처리/특징 생성(상세)**
+    - **격자(grid) 정합**: `preprocess.ensure_regular_grid`가 인터벌별 기대 시간축(예: 1m/1h/1d/1w/1M)에 맞춰 인덱스를 재정렬하고, 누락 타임스탬프를 NaN 행으로 채웁니다. 사전 단계인 `set_index_and_sort`는 `open_time_utc` 또는 `close_time_utc`로 바 엔드 시간을 만들고 정렬/중복제거/숫자형 변환을 수행합니다. `sanity_check`는 OHLC 양수·논리 일치, 거래량/체결강도(TB) 유효성 등을 검사해 이상치는 NaN 처리합니다. 마지막으로 `drop_outside_features`가 필요한 원시 컬럼만 남깁니다.
+    - **인터벌(분봉·일봉·주봉) 지원**: 심볼마다 보유한 모든 인터벌(예: 분봉 1m/3m/5m, 시간봉 1h/4h/12h, 일봉 1d, 주봉 1w, 월봉 1M)을 수집해 (심볼, 인터벌) 조합 단위로 특징을 구성합니다. 기준 앵커는 `DatasetConfig.base_interval`(미지정 시 가장 짧은 인터벌)로 잡고, 모든 조합을 동일 앵커 타임라인에 정렬합니다.
+    - **6개 엔지니어드 특징(원시→파생)**: 각 (심볼, 인터벌) 조합마다 다음 6개를 생성합니다.
+      - `r_oc_prev = log(open / close.shift(1))`
+      - `r_co = log(close / open)`
+      - `r_ho = log(high / open)`
+      - `r_lo = log(low / open)`
+      - `v_log1p = log1p(volume)`
+      - `taker_imbalance = clip((2*taker_buy_base_asset_volume - volume) / volume, -1, 1)`
+    - **마스크·경과시간 채널**: 각 특징에 대해 관측 여부 마스크 `f__mask`(관측=1/결측=0)와, 마지막 관측으로부터의 경과 분(min) `f__elapsed`를 계산한 뒤 `log1p` 변환합니다.
+    - **윈도우(window)·앵커(anchor)**: `DatasetConfig.window_size=L` 길이의 슬라이딩 윈도우를 사용합니다. `strict_anchor=true`면 모든 (심볼, 인터벌) 조합에서 최소 L개가 보장되는 타임스탬프만 앵커로 채택하며, 라벨 안정성을 위해 가장 최신 앵커 1개는 제거합니다. 결과적으로 한 앵커에서 특징 채널 수 `C = 6 * (#combos)`를 가지며, Dataset은 `X(L,C)`, `M(L,C)`, `T(L,C)`를 반환합니다.
+    - **정규화(normalization)**: 윈도우 내부에서 채널별(z-score, per-sample per-channel) 정규화를 적용하되, `taker_imbalance`는 본래 범위([-1,1])를 유지합니다. 정규화 후 NaN은 0으로 치환합니다. 경과시간(`__elapsed`)은 z-score를 적용하지 않고 `log1p(분)`만 사용합니다.
+    - **학습 입력 패킹**: 학습 시에는 `pack_state_for_buffer`로 `X|M|T`를 마지막 축 기준으로 결합해 `(L, 3C)` 형태로 만들고, 여기에 포트폴리오 과거 비중 `portfolio_weights_list(L, N+1)`까지 이어 붙여 에이전트 입력을 구성합니다.
 - **환경(`RLTradingEnv`)**: N개 자산 + 현금(USDT) 비중을 액션으로 하는 포트폴리오 환경, 가우시안 거래비용/슬리피지, 리스크 민감 보상
 - **보상(`RiskAwareReward`)**: 핵심수익(ret_core), 다운사이드(sigma_down), 벤치마크 대비 차등수익(Dret), Treynor를 조합한 합성 보상 (참고: [관련 논문](https://arxiv.org/pdf/2506.04358))
 - **에이전트(`IDQLAgent`)**: IQL(Value expectile + TD Q) + 확산정책(variance-preserving, epsilon 예측), 폴리시 인코더 EMA 분리 (참고: [IDQL 논문](https://arxiv.org/pdf/2304.10573))
